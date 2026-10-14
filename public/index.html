@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iot-demo 数据可视化</title>
+<style>
+  body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background: #f5f7fa; color: #1f2937; margin: 0; padding: 24px; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  .sub { color: #6b7280; font-size: 13px; margin-bottom: 20px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; margin-right: 6px; }
+  .dot.ok { background: #22c55e; }
+  .dot.bad { background: #ef4444; }
+  .cards { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+  .card { background: #fff; border-radius: 10px; padding: 16px 20px; min-width: 170px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .card .label { font-size: 13px; color: #6b7280; }
+  .card .value { font-size: 26px; font-weight: 600; margin-top: 6px; }
+  .temp { color: #dc2626; }
+  .humi { color: #2563eb; }
+  .panel { background: #fff; border-radius: 10px; padding: 16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .legend { font-size: 13px; color: #6b7280; margin-bottom: 8px; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 5px; }
+  .empty { color: #9ca3af; text-align: center; padding: 70px 0; font-size: 15px; }
+  .meta { font-size: 12px; color: #9ca3af; margin-top: 10px; }
+  code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <h1>iot-demo 数据可视化</h1>
+  <div class="sub">
+    <span id="dot" class="dot"></span><span id="statusText">正在连接服务…</span>
+    · 订阅主题 <code id="topic">-</code>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="label">最新温度（℃）</div><div class="value temp" id="temp">—</div></div>
+    <div class="card"><div class="label">最新湿度（%）</div><div class="value humi" id="humi">—</div></div>
+    <div class="card"><div class="label">已接收数据条数</div><div class="value" id="count">0</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="legend">
+      <i style="background:#dc2626"></i>温度（℃）
+      <i style="background:#2563eb;margin-left:14px"></i>湿度（%）
+    </div>
+    <svg id="chart" width="100%" height="300" viewBox="0 0 800 300" preserveAspectRatio="xMidYMid meet"></svg>
+    <div id="empty" class="empty">等待数据…（请确认 publisher.js 正在运行）</div>
+    <div class="meta">数据来源：publisher.js 通过 MQTT 发布的实时数据，网页每 2 秒自动刷新</div>
+  </div>
+
+<script>
+(function () {
+  const NS = 'http://www.w3.org/2000/svg';
+  const W = 800, H = 300;
+  const PAD = { l: 52, r: 52, t: 16, b: 30 };
+  const chart = document.getElementById('chart');
+  const emptyBox = document.getElementById('empty');
+  const dot = document.getElementById('dot');
+  const statusText = document.getElementById('statusText');
+
+  function el(name, attrs) {
+    const node = document.createElementNS(NS, name);
+    for (const k in attrs) node.setAttribute(k, attrs[k]);
+    return node;
+  }
+
+  function fmtTime(ts) {
+    const d = new Date(ts);
+    const p = (n) => String(n).padStart(2, '0');
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  function draw(history) {
+    chart.innerHTML = '';
+    if (history.length === 0) {
+      chart.style.display = 'none';
+      emptyBox.style.display = 'block';
+      return;
+    }
+    chart.style.display = 'block';
+    emptyBox.style.display = 'none';
+
+    const innerW = W - PAD.l - PAD.r;
+    const innerH = H - PAD.t - PAD.b;
+
+    // 温度、湿度各自取范围（留出上下边距，曲线不至于贴边）
+    const temps = history.map((h) => h.temperature);
+    const humis = history.map((h) => h.humidity);
+    const span = (arr) => {
+      const min = Math.min.apply(null, arr);
+      const max = Math.max.apply(null, arr);
+      const pad = (max - min) * 0.15 || 1;
+      return { min: min - pad, max: max + pad };
+    };
+    const tRange = span(temps);
+    const hRange = span(humis);
+
+    const x = (i) => PAD.l + (history.length === 1 ? innerW / 2 : (innerW * i) / (history.length - 1));
+    const y = (v, r) => PAD.t + innerH - (innerH * (v - r.min)) / (r.max - r.min);
+
+    // 网格线与刻度
+    for (let i = 0; i <= 4; i++) {
+      const gy = PAD.t + (innerH * i) / 4;
+      chart.appendChild(el('line', { x1: PAD.l, y1: gy, x2: W - PAD.r, y2: gy, stroke: '#eef2f7', 'stroke-width': 1 }));
+    }
+    chart.appendChild(el('line', { x1: PAD.l, y1: H - PAD.b, x2: W - PAD.r, y2: H - PAD.b, stroke: '#d1d5db', 'stroke-width': 1 }));
+
+    // 左右两侧刻度（左：温度，右：湿度）
+    for (let i = 0; i <= 4; i++) {
+      const gy = PAD.t + (innerH * i) / 4;
+      const tv = tRange.max - ((tRange.max - tRange.min) * i) / 4;
+      const hv = hRange.max - ((hRange.max - hRange.min) * i) / 4;
+      const lt = el('text', { x: PAD.l - 8, y: gy + 4, 'font-size': 11, fill: '#dc2626', 'text-anchor': 'end' });
+      lt.textContent = tv.toFixed(1);
+      chart.appendChild(lt);
+      const rt = el('text', { x: W - PAD.r + 8, y: gy + 4, 'font-size': 11, fill: '#2563eb' });
+      rt.textContent = hv.toFixed(1);
+      chart.appendChild(rt);
+    }
+
+    // 横轴时间（首、中、尾）
+    [0, Math.floor((history.length - 1) / 2), history.length - 1].forEach((i) => {
+      if (i < 0) return;
+      const anchor = i === 0 ? 'start' : i === history.length - 1 ? 'end' : 'middle';
+      const t = el('text', { x: x(i), y: H - PAD.b + 18, 'font-size': 11, fill: '#9ca3af', 'text-anchor': anchor });
+      t.textContent = fmtTime(history[i].ts);
+      chart.appendChild(t);
+    });
+
+    const poly = (values, r, color) => {
+      const pts = values.map((v, i) => x(i) + ',' + y(v, r)).join(' ');
+      chart.appendChild(el('polyline', { points: pts, fill: 'none', stroke: color, 'stroke-width': 2, 'vector-effect': 'non-scaling-stroke' }));
+      const cx = x(values.length - 1), cy = y(values[values.length - 1], r);
+      chart.appendChild(el('circle', { cx: cx, cy: cy, r: 3.5, fill: color }));
+    };
+    poly(temps, tRange, '#dc2626');
+    poly(humis, hRange, '#2563eb');
+  }
+
+  function refresh() {
+    fetch('/api/data')
+      .then((r) => r.json())
+      .then((data) => {
+        dot.className = 'dot ok';
+        statusText.textContent = '已连接，实时更新中';
+        document.getElementById('topic').textContent = data.topic;
+        document.getElementById('count').textContent = data.history.length;
+        if (data.latest) {
+          document.getElementById('temp').textContent = Number(data.latest.temperature).toFixed(2);
+          document.getElementById('humi').textContent = Number(data.latest.humidity).toFixed(2);
+        }
+        draw(data.history);
+      })
+      .catch(() => {
+        dot.className = 'dot bad';
+        statusText.textContent = '无法连接服务，请确认 server.js 正在运行';
+      });
+  }
+
+  refresh();
+  setInterval(refresh, 2000);
+})();
+</script>
+</body>
+</html>
